@@ -13,3 +13,7 @@ __pycache__/
 # Local render output (anchored to the repo root, so docs/*.png still ships)
 /preview.png
 /out_*.mp4
+
+# Never commit credentials
+dsh_cookies.txt
+cookies.txt

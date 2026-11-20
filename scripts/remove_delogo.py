@@ -56,7 +56,7 @@ def main():
 
     C.require_ffmpeg()
     a.src = C.resolve_source(a.src, height=a.height, cookies=a.cookies,
-                             force=a.force_download)
+                             force=a.force_download, anonymous=a.anonymous)
     p = C.probe(a.src)
     fw, fh = C.actual_frame_size(a.src, p["width"], p["height"])
 

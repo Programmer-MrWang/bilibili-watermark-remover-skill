@@ -79,6 +79,24 @@ Want the download on its own (big file, run it in the background)?
 
     python3 scripts/fetch_source.py '<link>' --height 1080 -o wm_work
 
+### Not sure what this machine is missing?
+
+    python3 scripts/doctor.py
+
+It checks python deps, torch + which GPU backend is usable, ffmpeg, yt-dlp, the
+cookie file and free disk, and prints the exact fix command next to anything that
+is missing. Nothing is downloaded, so it is safe to run first.
+
+Cookies are optional: an anonymous session still gets 720p and the removal works
+identically. To get 1080p and above:
+
+    python3 scripts/doctor.py --from-browser edge     # or chrome / firefox / safari
+
+which writes `~/.config/bilibili-wm-remover/cookies.txt` (mode 600). If that fails
+— Chromium 127+ encrypts its cookie store in a way yt-dlp cannot always read — the
+doctor says so and points at the export-by-extension route instead of failing
+silently.
+
 ## What runs where
 
 | Script | Needs torch | What it does |

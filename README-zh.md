@@ -71,6 +71,21 @@ cookie 依次取 `--cookies` → `$DSH_VIDEO_COOKIES` → `~/.dsh/video.json` �
 
     python3 scripts/fetch_source.py '<链接>' --height 1080 -o wm_work
 
+### 不确定这台机器缺什么
+
+    python3 scripts/doctor.py
+
+它会逐项检查 python 依赖、torch 与可用的 GPU 后端、ffmpeg、yt-dlp、cookie 文件和
+磁盘余量，缺什么就在那一行下面直接给出修复命令。全程不下载，可以先跑。
+
+cookie 是可选的：匿名也能拿 720p，去水印效果完全一样。要 1080p 及以上：
+
+    python3 scripts/doctor.py --from-browser edge     # 或 chrome / firefox / safari
+
+会把 cookie 写到 `~/.config/bilibili-wm-remover/cookies.txt`（权限 600）。这条路失败也不含糊
+—— Chromium 127+ 的 cookie 加密 yt-dlp 不一定读得动，doctor 会说明原因并指向
+「用扩展导出」那条路，而不是默默失败。
+
 ## 每个脚本干什么
 
 | 脚本 | 需要 torch | 作用 |

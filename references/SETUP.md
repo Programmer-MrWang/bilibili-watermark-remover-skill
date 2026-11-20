@@ -61,6 +61,34 @@ chmod 600 /tmp/c.txt
 
 cookie 会过期。报「需要登录」先去刷新 cookie，别去怀疑代码。
 
+### 一条命令让脚本自己去读
+
+```bash
+python3 scripts/doctor.py --from-browser edge      # 或 chrome / firefox / safari
+```
+
+成功了会打印写到哪（默认 `~/.config/bilibili-wm-remover/cookies.txt`，权限 600），之后所有脚本
+自动用它 —— 不需要再传 `--cookies`。
+
+失败时它会说明是哪一类，不要含糊带过：
+
+| 报错 | 含义 | 怎么办 |
+|---|---|---|
+| `could not find X cookies database` | 这个浏览器没装，或 profile 名不对 | 换一个浏览器试 |
+| `no bilibili cookies found` | 该浏览器没登录过 bilibili.com | 先去登录，再导一次 |
+| `App-Bound` / `decrypt` | Chromium 127+ 的新加密，yt-dlp 读不了 | 换 Safari / Firefox，或用扩展导出 |
+| 导出的文件里没有 `SESSDATA` | 只是访客 cookie | 等于没登录，重新登录后重导 |
+
+### 各平台的坑
+
+- **macOS + Chrome/Edge**：读 cookie 要访问钥匙串，系统可能弹权限框，拒绝就失败；
+  也可能被 App-Bound Encryption 挡住 —— 这条路在 Chromium 127+ 上不稳定，优先 Safari/Firefox 或扩展导出。
+- **Windows**：Chrome/Edge 的 cookie 用 DPAPI 加密，绑当前用户；换用户或换机器后文件失效，要重导。
+- **Linux**：无头环境没有浏览器可读，只能扩展导出或从别处拷 `cookies.txt`（记得 `chmod 600`）。
+- **所有平台**：cookie 会过期（SESSDATA 到期）。表现是「昨天还好，今天只有 720p」，
+  先跑 `doctor.py` 看 `expired`，别去怀疑代码。
+
+
 ## Python 依赖
 
 ```bash

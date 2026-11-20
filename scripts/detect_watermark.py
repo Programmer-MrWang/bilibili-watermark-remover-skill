@@ -338,7 +338,7 @@ def main():
 
     C.require_ffmpeg()
     a.video = C.resolve_source(a.video, height=a.height, cookies=a.cookies,
-                               force=a.force_download)
+                               force=a.force_download, anonymous=a.anonymous)
     os.makedirs(a.out, exist_ok=True)
 
     grays, scale, p, (fw, fh) = collect(a.video, max(8, min(a.frames, 96)))

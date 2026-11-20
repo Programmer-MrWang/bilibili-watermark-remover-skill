@@ -77,7 +77,7 @@ def main():
 
     C.require_ffmpeg()
     a.dst = C.resolve_source(a.dst, height=a.height, cookies=a.cookies,
-                             force=a.force_download)
+                             force=a.force_download, anonymous=a.anonymous)
     if a.src:
         a.src = C.resolve_source(a.src, height=a.height, cookies=a.cookies)
     mask = cv2.imread(os.path.join(a.work, "mask_tight.png"), cv2.IMREAD_GRAYSCALE)

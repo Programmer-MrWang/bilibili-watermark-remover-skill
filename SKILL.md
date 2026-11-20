@@ -54,6 +54,16 @@ ffmpeg -version | head -1
 
 缺依赖就按平台给一行命令（见 `references/SETUP.md`），别自己闷头装半天。
 
+**不确定这台机器缺什么，就先跑自检**（不下载任何东西，几秒钟）：
+
+```bash
+python3 scripts/doctor.py
+```
+
+它逐项报 `[OK]/[WARN]/[MISS]`：python / numpy+cv2 / torch 与可用设备 / ffmpeg /
+yt-dlp / cookies / 磁盘余量，并在每一项后面直接给出修复命令。**新机器上第一步就跑它**，
+比让用户逐个报错快得多。
+
 **输入可以是本地文件，也可以直接是 B站 链接** —— 所有脚本都吃链接，内部会自动下载：
 
 ```bash
@@ -135,6 +145,80 @@ python3 scripts/verify_result.py out_lama.mp4 --src "$VIDEO" --work wm_work
 - 若 `verify_result.py` 直接报 `FAIL: residual could not be measured`，
   通常是掩膜被存成了 0/1 的 PNG（读回来全黑）。掩膜必须是 0/255 的单通道图。
 
+## 机器没配好时怎么办（这是常态，不是意外）
+
+这个 skill 会被发到完全陌生的机器上：可能没装 torch，可能没有 yt-dlp，可能浏览器里
+根本没登录 B站。**不要假装这些不存在，也不要默默降级交一个 720p 的片子**。
+正确做法是：说清楚「现在能做什么 / 缺什么 / 补上要哪一条命令」，再让用户决定。
+
+先跑 `python3 scripts/doctor.py`，它会把下面这些一次查完。
+
+### 缺 ffmpeg / numpy / cv2（硬依赖，没有就跑不了）
+
+| 平台 | 命令 |
+|---|---|
+| macOS | `brew install ffmpeg` / `pip install -r requirements.txt` |
+| Windows | `winget install Gyan.FFmpeg` / `pip install -r requirements.txt` |
+| Linux | `sudo apt install ffmpeg` / `pip install -r requirements.txt` |
+
+### 缺 torch（只有 2 号 LaMa 需要）
+
+不要因此卡住整个流程。可以先告诉用户：**3 号 delogo 和 4 号 alpha 现在就能跑**，
+2 号要装 torch（各平台命令见 `references/SETUP.md`，注意按显卡选对 wheel）。
+把选择权交给他：先看 3/4 的效果，还是先装 torch 再比。
+
+### 缺 yt-dlp（只有链接输入需要）
+
+本地文件完全不受影响。给链接时才发现没有，就一次说清：
+
+```bash
+# macOS
+brew install yt-dlp
+# Windows
+winget install yt-dlp
+# 任意平台（pip）
+pip install --user -U yt-dlp
+```
+
+装完 `doctor.py` 应显示 `[OK] yt-dlp`。
+
+### 没有 cookie，或者只拿到 720p（最常见的求助）
+
+B站 匿名对多数投稿只给到 720p。**这时候不要直接开渲染**，先问一句：
+
+> 现在能下 720p，去水印效果一样，只是成片是 720p。要 1080p 的话需要登录态，
+> 大概一分钟能配好，要现在弄吗？
+
+要的话，按成功率从高到低给三条路：
+
+1. **让脚本从浏览器里读**（最省事，能读就不用导出）
+
+   ```bash
+   python3 scripts/doctor.py --from-browser edge     # 或 chrome / firefox / safari
+   ```
+
+   成功会打印写到了哪里（默认 `~/.config/bilibili-wm-remover/cookies.txt`，权限 600）。
+   失败会明确说原因，不要含糊过去：
+   - `could not find X cookies database` → 那个浏览器没装、或没有这个 profile
+   - `no bilibili cookies found` → 浏览器里没登录过 bilibili.com，先去登录
+   - `App-Bound / decrypt` → Chromium 127+ 的新加密，换 Safari/Firefox，
+     或用扩展导出（见下一条）
+
+2. **浏览器扩展导出 cookies.txt**（任何浏览器都行），格式必须是 **Netscape**，不是 JSON。
+   然后要么 `--cookies /path/to/cookies.txt`，要么 `export DSH_VIDEO_COOKIES=/path/to/cookies.txt`。
+
+3. **已经在用 DSH 的视频工具** → 什么都不用做。本 skill 先读 `$DSH_VIDEO_COOKIES`，
+   再读 `~/.dsh/video.json` 的 `cookies` 字段，最后才看自己的配置目录。
+
+配好之后让他再跑一次 `python3 scripts/doctor.py` 确认 `[OK] cookies ... SESSDATA`，
+别让用户以为「导出了就好了」—— 没有 SESSDATA 的文件等于没登录。
+
+### 不要做的事
+
+- 不要用 `sudo`、不要替用户装系统级软件，除非他明确同意；先给命令。
+- 不要在用户不知情时把清晰度从 1080 换成 720 然后当成完成。
+- 不要把 cookie 内容打印出来、贴进对话或提交到仓库（`.gitignore` 已经排除）。
+- 不要因为缺 cookie 就说「这个视频不能处理」—— 720p 一样能去水印。
 ## 已知的极限（照实说，不要粉饰）
 
 1. **过曝/高光处的残影**。α≈0.7 的白色叠加放在接近 255 的背景上，等于把那块画面削平了；

@@ -12,13 +12,40 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import urllib.request
 
 import numpy as np
 import cv2
 
-FFMPEG = os.environ.get("FFMPEG_BIN", "ffmpeg")
-FFPROBE = os.environ.get("FFPROBE_BIN", "ffprobe")
+def _ffmpeg_default():
+    """Honour an explicit path before falling back to a PATH lookup.
+
+    DSH_FFMPEG_PATH is what the DSH desktop app sets: it ships ffmpeg under
+    $DSH_HOME/bin, which is often not on PATH when a script is launched from a
+    GUI. ffprobe normally sits next to ffmpeg.
+    """
+    for var in ("FFMPEG_BIN", "DSH_FFMPEG_PATH"):
+        v = os.environ.get(var)
+        if v:
+            return v
+    return "ffmpeg"
+
+
+def _ffprobe_for(ffmpeg):
+    v = os.environ.get("FFPROBE_BIN")
+    if v:
+        return v
+    d = os.path.dirname(ffmpeg)
+    if d:
+        cand = os.path.join(d, "ffprobe.exe" if os.name == "nt" else "ffprobe")
+        if os.path.exists(cand):
+            return cand
+    return "ffprobe"
+
+
+FFMPEG = _ffmpeg_default()
+FFPROBE = _ffprobe_for(FFMPEG)
 
 # Verified reachable 2026-11; the mirrors are listed so one blocked host is
 # not fatal (GitHub releases, then a HuggingFace mirror for mainland China).
@@ -436,6 +463,183 @@ def resolve_cookies(explicit=None, env=None):
     return None
 
 
+def skill_config_dir(env=None):
+    """Where this skill keeps its own settings (not DSH's)."""
+    env = env or os.environ
+    if os.name == "nt":
+        base = env.get("APPDATA") or os.path.expanduser("~")
+    else:
+        base = env.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(base, "bilibili-wm-remover")
+
+
+def skill_cookies_path(env=None):
+    return os.path.join(skill_config_dir(env), "cookies.txt")
+
+
+def cookie_status(path):
+    """Is this a usable Netscape cookie file, and is it signed in?"""
+    info = {"path": path, "exists": False, "netscape": False, "has_sessdata": False,
+            "expired": False, "count": 0}
+    if not path or not os.path.exists(path):
+        return info
+    info["exists"] = True
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return info
+    info["netscape"] = text.lstrip().startswith("# Netscape")
+    now = time.time()
+    for line in text.splitlines():
+        if not line or line.startswith("#") or "\t" not in line:
+            continue
+        f5 = line.split("\t")
+        if len(f5) < 7:
+            continue
+        info["count"] += 1
+        if f5[5] == "SESSDATA":
+            info["has_sessdata"] = True
+            try:
+                # yt-dlp writes microseconds for session cookies; treat huge
+                # values as "session, does not expire".
+                exp = float(f5[4]) / 1e6
+                if exp < now:
+                    info["expired"] = True
+            except ValueError:
+                pass
+    return info
+
+
+def resolve_cookies_ex(explicit=None, env=None, anonymous=False):
+    """Return (path_or_None, source_label).
+
+    Order: --cookies > $DSH_VIDEO_COOKIES > ~/.dsh/video.json > this skill's own
+    config dir. The DSH entries come first so a machine already logged in for the
+    DSH video tools needs no second setup; the skill's own file is the fallback
+    for people who do not use DSH at all.
+    """
+    env = env or os.environ
+    if anonymous:
+        return None, "disabled by --anonymous"
+    for cand, label in ((explicit, "--cookies"),
+                        (env.get(COOKIES_ENV), "$" + COOKIES_ENV)):
+        if cand:
+            if not os.path.exists(cand):
+                raise SystemExit("cookies file not found: %s" % cand)
+            return cand, label
+    try:
+        with open(DSH_VIDEO_JSON, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        p = cfg.get("cookies") if isinstance(cfg, dict) else None
+        if p and os.path.exists(p):
+            return p, DSH_VIDEO_JSON
+    except (OSError, ValueError):
+        pass
+    own = skill_cookies_path(env)
+    if os.path.exists(own):
+        return own, own
+    return None, "not configured"
+
+
+def resolve_cookies(explicit=None, env=None):
+    return resolve_cookies_ex(explicit, env)[0]
+
+
+def cookie_help(height=1080):
+    """The message a user sees when 1080p is wanted but nobody is logged in."""
+    own = skill_cookies_path()
+    return (
+        "  You asked for %dp. Bilibili caps anonymous requests at 720p for most\n"
+        "  uploads (a few allow 1080p), so going higher needs a signed-in session.\n"
+        "  Three ways to get one:\n"
+        "\n"
+        "  1) If you already use DSH's video tools, they are set up: nothing to do.\n"
+        "     This skill reads $DSH_VIDEO_COOKIES and ~/.dsh/video.json first.\n"
+        "\n"
+        "  2) Let this skill pull them from your browser (needs yt-dlp):\n"
+        "       python3 scripts/doctor.py --from-browser chrome      # or edge, firefox, safari\n"
+        "     It writes %s (mode 600).\n"
+        "\n"
+        "  3) Export cookies.txt with a browser extension (Netscape format, not JSON)\n"
+        "     and point the skill at it:\n"
+        "       --cookies /path/to/cookies.txt\n"
+        "     or  export %s=/path/to/cookies.txt\n"
+        "\n"
+        "  Either way the file must come from a logged-in bilibili.com session and\n"
+        "  contain SESSDATA. It expires eventually; re-export when it does.\n"
+        "  Run 'python3 scripts/doctor.py' to check the current state."
+        % (height, own, COOKIES_ENV))
+
+
+def export_cookies_from_browser(browser, dest=None, env=None):
+    """Dump Bilibili cookies from a local browser into a Netscape file.
+
+    Uses yt-dlp's own cookie reader, so it understands the Keychain / DPAPI
+    storage on each OS without a browser extension. Chromium 127+ may refuse
+    (App-Bound Encryption) - that is reported, not hidden.
+    """
+    dest = dest or skill_cookies_path(env)
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    ytdlp, _version = find_ytdlp(env)
+
+    code = (
+        "import http.cookiejar, sys\n"
+        "from yt_dlp.cookies import extract_cookies_from_browser as x\n"
+        "b, out = sys.argv[1], sys.argv[2]\n"
+        "jar = x(b)\n"
+        "keep = ('bilibili', 'bilivideo', 'biliapi')\n"
+        "w = http.cookiejar.MozillaCookieJar(out)\n"
+        "n = 0\n"
+        "for c in jar:\n"
+        "    if any(k in (c.domain or '') for k in keep):\n"
+        "        w.set_cookie(c); n += 1\n"
+        "if not n:\n"
+        "    sys.exit('no bilibili cookies found in ' + b + '; log in there first')\n"
+        "w.save(ignore_discard=True, ignore_expires=True)\n"
+        "print(n)\n"
+    )
+    # yt-dlp's own interpreter first (pip installs expose yt_dlp to it), then ours.
+    interpreters = []
+    real = os.path.realpath(ytdlp)
+    for up in (os.path.dirname(os.path.dirname(real)),):
+        cand = os.path.join(up, "bin", "python")
+        if os.path.exists(cand):
+            interpreters.append(cand)
+    interpreters.append(sys.executable)
+
+    last = None
+    for py in interpreters:
+        r = subprocess.run([py, "-c", code, browser, dest],
+                           capture_output=True, text=True, timeout=120)
+        if r.returncode == 0:
+            try:
+                os.chmod(dest, 0o600)
+            except OSError:
+                pass
+            return dest, (r.stdout or "").strip()
+        last = (r.stderr or "").strip() or (r.stdout or "").strip()
+        if "ModuleNotFoundError" not in last:
+            break
+    # Report the exception line, not the top of the traceback: the reason is
+    # always at the bottom and the head is just call frames.
+    tail = [l.strip() for l in (last or "").splitlines() if l.strip()]
+    detail = tail[-1] if tail else "no output"
+    low = (last or "").lower()
+    if "app-bound" in low or "decrypt" in low or "dpapi" in low or "permission" in low:
+        raise SystemExit(
+            "could not read %s's cookie store.\n"
+            "  %s\n"
+            "  Chromium 127+ encrypts cookies (App-Bound / DPAPI) in a way yt-dlp\n"
+            "  cannot always decrypt, and macOS may also be blocking the Keychain\n"
+            "  prompt. Workarounds, in order of success rate:\n"
+            "    a) try another browser:  --from-browser safari   (or firefox)\n"
+            "    b) export cookies.txt with a browser extension (Netscape format)\n"
+            "    c) if you use DSH, its video tools may already have a working file"
+            % (browser, detail))
+    raise SystemExit("cookie export failed for %s:\n  %s" % (browser, detail))
+
+
 def media_dir(env=None):
     env = env or os.environ
     return env.get(MEDIA_ENV) or os.path.join(
@@ -462,14 +666,15 @@ def _explain_ytdlp(stderr, code):
     return "yt-dlp exited %s%s" % (code, (": " + tail) if tail else "")
 
 
-def fetch_video(url, height=1080, cookies=None, force=False, quiet=False, env=None):
+def fetch_video(url, height=1080, cookies=None, force=False, quiet=False, env=None,
+                anonymous=False):
     """Download url (best <= height, audio included) and return metadata.
 
-    Returns {"path","title","duration","height","url","cached"}.
+    Returns {"path","title","duration","height","url","cached","auth"}.
     """
     env = env or os.environ
     ytdlp, version = find_ytdlp(env)
-    cookie_path = resolve_cookies(cookies, env)
+    cookie_path, cookie_src = resolve_cookies_ex(cookies, env, anonymous=anonymous)
 
     key = hashlib.sha1(("%s|%s" % (url, height)).encode("utf-8")).hexdigest()[:20]
     outdir = os.path.join(media_dir(env), key)
@@ -490,7 +695,8 @@ def fetch_video(url, height=1080, cookies=None, force=False, quiet=False, env=No
                     return {"path": p, "title": meta.get("title"),
                             "duration": meta.get("duration"),
                             "height": meta.get("height", height),
-                            "url": url, "cached": True}
+                            "url": url, "cached": True,
+                            "auth": meta.get("auth", cookie_src)}
 
     common_flags = ["--ignore-config", "--no-warnings", "--no-playlist"]
     base = [ytdlp] + common_flags
@@ -501,12 +707,15 @@ def fetch_video(url, height=1080, cookies=None, force=False, quiet=False, env=No
     title = duration = None
     if not quiet:
         print("  probing %s" % url, file=sys.stderr)
-    probe = subprocess.run(base + ["-J", url], capture_output=True, text=True, timeout=180)
-    if probe.returncode != 0:
+    # NB: do not name this "probe" - that shadows the module-level probe()
+    # used further down to read the height of the downloaded file.
+    meta_run = subprocess.run(base + ["-J", url], capture_output=True, text=True,
+                              timeout=180)
+    if meta_run.returncode != 0:
         raise SystemExit("cannot read %s\n  %s"
-                         % (url, _explain_ytdlp(probe.stderr, probe.returncode)))
+                         % (url, _explain_ytdlp(meta_run.stderr, meta_run.returncode)))
     try:
-        info = json.loads(probe.stdout)
+        info = json.loads(meta_run.stdout)
         if info.get("_type") == "playlist":
             entries = [e for e in (info.get("entries") or []) if e]
             if not entries:
@@ -514,6 +723,18 @@ def fetch_video(url, height=1080, cookies=None, force=False, quiet=False, env=No
             info = entries[0]
         title = info.get("title")
         duration = info.get("duration")
+        heights = sorted({int(f["height"]) for f in (info.get("formats") or [])
+                          if f.get("vcodec") not in (None, "none")
+                          and isinstance(f.get("height"), int) and f["height"] > 0})
+        best = heights[-1] if heights else None
+        if best and best < height and not quiet:
+            # Not a failure: say what is actually available and why.
+            if not cookie_path:
+                print("\n  only %dp is available without signing in." % best, file=sys.stderr)
+                print(cookie_help(height), file=sys.stderr)
+            else:
+                print("\n  note: this upload tops out at %dp (signed-in as per %s)"
+                      % (best, cookie_src), file=sys.stderr)
     except SystemExit:
         raise
     except ValueError:
@@ -552,14 +773,34 @@ def fetch_video(url, height=1080, cookies=None, force=False, quiet=False, env=No
     if video is None:
         raise SystemExit("download failed\n  %s" % _explain_ytdlp(dl.stderr, dl.returncode))
 
+    # Trust the file, not the probe: Bilibili will happily list a format it then
+    # refuses to serve, and the probe runs before any rate limiting kicks in.
+    actual = None
+    try:
+        actual = probe(video)["height"]
+    except Exception:
+        pass
+    if actual and actual < height and not quiet:
+        if not cookie_path:
+            print("\n  got %dp, not %dp - anonymous quality is capped by the site."
+                  % (actual, height), file=sys.stderr)
+            print(cookie_help(height), file=sys.stderr)
+        elif actual < height:
+            print("\n  got %dp: this upload tops out there (signed in per %s)"
+                  % (actual, cookie_src), file=sys.stderr)
+
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump({"url": url, "title": title, "duration": duration,
-                   "height": height, "ytdlp": version}, f, ensure_ascii=False, indent=2)
+                   "height": actual or height, "requested": height,
+                   "auth": cookie_src, "ytdlp": version}, f,
+                  ensure_ascii=False, indent=2)
 
     if not quiet:
-        print("  saved -> %s" % video, file=sys.stderr)
+        print("  saved -> %s (%dp)" % (video, actual) if actual else
+              "  saved -> %s" % video, file=sys.stderr)
     return {"path": video, "title": title, "duration": duration,
-            "height": height, "url": url, "cached": False}
+            "height": actual or height, "url": url, "cached": False,
+            "auth": cookie_src}
 
 
 def add_fetch_args(ap):
@@ -571,15 +812,20 @@ def add_fetch_args(ap):
                          "or the cookies field in ~/.dsh/video.json)")
     ap.add_argument("--force-download", action="store_true",
                     help="re-download even if a cached copy exists")
+    ap.add_argument("--anonymous", action="store_true",
+                    help="ignore cookies and fetch anonymously (<=720p); useful to "
+                         "see what works before setting up a signed-in session")
 
 
-def resolve_source(src, height=1080, cookies=None, force=False, quiet=False):
+def resolve_source(src, height=1080, cookies=None, force=False, quiet=False,
+                   anonymous=False):
     """Accept a local path or a link; always return a readable local path."""
     if not is_url(src):
         if not os.path.exists(src):
             raise SystemExit("input not found: %s" % src)
         return src
-    info = fetch_video(src, height=height, cookies=cookies, force=force, quiet=quiet)
+    info = fetch_video(src, height=height, cookies=cookies, force=force, quiet=quiet,
+                       anonymous=anonymous)
     if info.get("title") and not quiet:
         print("  %s" % info["title"], file=sys.stderr)
     return info["path"]

@@ -50,7 +50,7 @@ def main():
 
     C.require_ffmpeg()
     a.src = C.resolve_source(a.src, height=a.height, cookies=a.cookies,
-                             force=a.force_download)
+                             force=a.force_download, anonymous=a.anonymous)
 
     import torch
     torch.set_grad_enabled(False)
