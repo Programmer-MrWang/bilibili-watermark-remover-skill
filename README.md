@@ -1,3 +1,5 @@
+**English** | [简体中文](README-zh.md)
+
 # bilibili-watermark-remover
 
 An agent skill that removes the **Bilibili (哔哩哔哩) watermark** from a video — the
@@ -107,7 +109,8 @@ If the gate fails, the skill stops and says so rather than rendering garbage.
 verify_result.py reports two numbers instead of an opinion:
 
 - **residual** - mean brightness of the mask area relative to the ring around it,
-  compared against the source (B站 mark ~ +46; a good result is under +6);
+  compared against the source (with the current ring definition the source reads
+  ~ +114; a good result is under +6);
 - **SSIM** - the re-encode did not damage the rest of the picture.
 
 On the reference clip: residual +114.7 to +1.0 (99.1% removed), SSIM 0.988,
