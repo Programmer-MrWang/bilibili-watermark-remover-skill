@@ -1,0 +1,6 @@
+# ffmpeg must be installed separately (see references/SETUP.md)
+numpy>=1.24
+opencv-python-headless>=4.8
+# torch is optional: only remove_lama.py and the LaMa panel of make_preview.py need it.
+# Install the build matching your GPU, see references/SETUP.md.
+torch>=2.0

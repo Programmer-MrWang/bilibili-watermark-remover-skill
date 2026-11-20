@@ -1,0 +1,15 @@
+# Working directories produced by the pipeline
+wm_work/
+
+# Model weights (downloaded at runtime, ~205 MB)
+big-lama.pt
+models/
+*.part
+
+# Python
+__pycache__/
+*.pyc
+
+# Local render output (anchored to the repo root, so docs/*.png still ships)
+/preview.png
+/out_*.mp4
