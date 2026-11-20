@@ -133,4 +133,9 @@ at its author. If the clip is not yours, get the file from the creator instead.
 
 ## License
 
-MIT. The LaMa model weights are Apache-2.0 (original: advimman/lama).
+This repository is MIT licensed - see [LICENSE](LICENSE).
+
+**Third-party:** the LaMa model weights (`big-lama.pt`) are not part of this
+repository. They are downloaded at runtime and are distributed under Apache-2.0
+by their original authors ([advimman/lama](https://github.com/advimman/lama)).
+ffmpeg, PyTorch and OpenCV keep their own licenses.
