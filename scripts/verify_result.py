@@ -72,9 +72,14 @@ def main():
     ap.add_argument("--work", default="wm_work")
     ap.add_argument("--step", type=int, default=15)
     ap.add_argument("--json", default=None)
+    C.add_fetch_args(ap)
     a = ap.parse_args()
 
     C.require_ffmpeg()
+    a.dst = C.resolve_source(a.dst, height=a.height, cookies=a.cookies,
+                             force=a.force_download)
+    if a.src:
+        a.src = C.resolve_source(a.src, height=a.height, cookies=a.cookies)
     mask = cv2.imread(os.path.join(a.work, "mask_tight.png"), cv2.IMREAD_GRAYSCALE)
     if mask is None:
         sys.exit("missing mask_tight.png - run detect_watermark.py first")

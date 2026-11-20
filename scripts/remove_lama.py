@@ -45,9 +45,12 @@ def main():
     ap.add_argument("--encoder", default="auto")
     ap.add_argument("--crf", type=int, default=None)
     ap.add_argument("--limit", type=int, default=0, help="render only the first N frames")
+    C.add_fetch_args(ap)
     a = ap.parse_args()
 
     C.require_ffmpeg()
+    a.src = C.resolve_source(a.src, height=a.height, cookies=a.cookies,
+                             force=a.force_download)
 
     import torch
     torch.set_grad_enabled(False)

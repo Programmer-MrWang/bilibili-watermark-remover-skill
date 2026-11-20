@@ -42,9 +42,12 @@ def main():
     ap.add_argument("--edge-repair", type=float, default=0.0,
                     help="fraction of the mask width to inpaint at the rim (0 = off)")
     ap.add_argument("--limit", type=int, default=0)
+    C.add_fetch_args(ap)
     a = ap.parse_args()
 
     C.require_ffmpeg()
+    a.src = C.resolve_source(a.src, height=a.height, cookies=a.cookies,
+                             force=a.force_download)
     p = C.probe(a.src)
     fw, fh = C.actual_frame_size(a.src, p["width"], p["height"])
 

@@ -51,9 +51,12 @@ def main():
     ap.add_argument("--pad", type=int, default=0,
                     help="extra pixels around the mask box (defaults to a scaled 3px)")
     ap.add_argument("--limit", type=int, default=0)
+    C.add_fetch_args(ap)
     a = ap.parse_args()
 
     C.require_ffmpeg()
+    a.src = C.resolve_source(a.src, height=a.height, cookies=a.cookies,
+                             force=a.force_download)
     p = C.probe(a.src)
     fw, fh = C.actual_frame_size(a.src, p["width"], p["height"])
 

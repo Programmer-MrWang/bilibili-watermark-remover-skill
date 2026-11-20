@@ -333,9 +333,12 @@ def main():
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--force", action="store_true",
                     help="skip the 'is this really Bilibili?' gate (you take the risk)")
+    C.add_fetch_args(ap)
     a = ap.parse_args()
 
     C.require_ffmpeg()
+    a.video = C.resolve_source(a.video, height=a.height, cookies=a.cookies,
+                               force=a.force_download)
     os.makedirs(a.out, exist_ok=True)
 
     grays, scale, p, (fw, fh) = collect(a.video, max(8, min(a.frames, 96)))

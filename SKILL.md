@@ -22,6 +22,8 @@ description: Remove the Bilibili (哔哩哔哩) watermark from a video file. Use
    第一轮必须：检测 + 一张对比图 + 说明 + 推荐 LaMa + 等用户选。渲染 5 分钟片要 30+ 分钟，
    先斩后奏会浪费用户一晚。
 3. **只改掩膜内的像素。** 掩膜外一个字节都不许动，这是「无缝」的唯一保证。
+4. **输入是什么就给什么。** 用户甩一个 B站 链接过来时不要反问他「先下载一下」——
+   脚本自己会下。只有在他要的清晰度必须登录、而这台机器没有 cookie 时才回头问。
 
 ## 工作目录约定
 
@@ -34,11 +36,16 @@ wm_work/
   mask_tight.png       精确字形掩膜（用于 alpha 反解、框计算）
   alpha.npy            逐像素 alpha
   mask_zoom.png        掩膜可视化，给用户看「框对了没」
+  resolved.json        仅链接输入时：下载到哪了、标题、时长
 ```
+
+链接输入的下载件不进 `wm_work/`，而是留在共享缓存
+`~/.cache/bilibili-wm-remover/media/<hash>/`（可用 `BILI_WM_MEDIA_DIR` 改）。
+这样同一个链接做检测、预览、渲染时只下一次；删不删由用户决定，别自作主张清理。
 
 ## 流程
 
-### 第 0 步：环境
+### 第 0 步：环境与输入
 
 ```bash
 python3 -c "import cv2, numpy, torch; print(torch.__version__, cv2.__version__)"
@@ -46,6 +53,22 @@ ffmpeg -version | head -1
 ```
 
 缺依赖就按平台给一行命令（见 `references/SETUP.md`），别自己闷头装半天。
+
+**输入可以是本地文件，也可以直接是 B站 链接** —— 所有脚本都吃链接，内部会自动下载：
+
+```bash
+python3 scripts/detect_watermark.py 'https://www.bilibili.com/video/BV1xx411c7mD' -o wm_work
+# 或者先把片子下下来（大文件可以先跑着）
+python3 scripts/fetch_source.py 'https://www.bilibili.com/video/BV1xx411c7mD' --height 1080 -o wm_work
+```
+
+下载走 `yt-dlp`，落在 `~/.cache/bilibili-wm-remover/media/`（键 = 链接 + 清晰度），
+重跑不会重复下。cookie 依次取 `--cookies` → `$DSH_VIDEO_COOKIES` →
+`~/.dsh/video.json` 的 `cookies` 字段 —— 和 DSH 的视频插件是同一套来源，
+所以装过 DSH 并登录过 B站 的机器不用额外配置。
+
+**没 cookie 也能跑，只是上限 720p**；1080p 及以上需要登录态。用户只给链接时，
+先确认清晰度能不能接受，别下完才发现只有 480p。
 
 ### 第 1 步：检测 + 校验（约 20–40 秒，与片长无关）
 

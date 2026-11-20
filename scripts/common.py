@@ -5,8 +5,10 @@ Deliberately dependency-light and cross-platform:
   - device selection probes mps / cuda / xpu / directml / cpu in that order
 """
 
+import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -116,7 +118,7 @@ def actual_frame_size(path, hint_w, hint_h):
 # frame IO
 # --------------------------------------------------------------------------- #
 def iter_sampled(path, want):
-    """Yield (\`t\`, raw_bgr_bytes, w, h) for ~\`want\` evenly spaced frames.
+    """Yield (`t`, raw_bgr_bytes, w, h) for ~`want` evenly spaced frames.
 
     Decoding always runs at full size; callers downscale as they wish. The
     window is killed on early exit so a partial read never leaves a zombie
@@ -336,6 +338,251 @@ def torch_device(dev):
         import torch_directml
         return torch_directml.device()
     return torch.device(dev)
+
+
+# --------------------------------------------------------------------------- #
+# input resolution: local file or a Bilibili / yt-dlp supported link
+# --------------------------------------------------------------------------- #
+URL_RE = re.compile(r"^(?:https?|ftp)://", re.I)
+
+YTDLP_ENV = "DSH_YTDLP_PATH"        # same variable the DSH video plugin honours
+COOKIES_ENV = "DSH_VIDEO_COOKIES"   # ditto
+DSH_VIDEO_JSON = os.path.join(os.path.expanduser("~"), ".dsh", "video.json")
+MEDIA_ENV = "BILI_WM_MEDIA_DIR"
+
+_YTDLP_HINT = (
+    "yt-dlp not found, and it is what turns a link into a file.\n"
+    "  macOS:   brew install yt-dlp\n"
+    "  Windows: winget install yt-dlp     (or: pip install --user -U yt-dlp)\n"
+    "  Linux:   pip install --user -U yt-dlp   (or your distro package)\n"
+    "  then either put it on PATH or set %s=/path/to/yt-dlp" % YTDLP_ENV
+)
+
+
+def is_url(src):
+    return bool(URL_RE.match(str(src)))
+
+
+def _ytdlp_candidates(env=None):
+    env = env or os.environ
+    out = []
+    if env.get(YTDLP_ENV):
+        out.append(env[YTDLP_ENV])
+    which = shutil.which("yt-dlp", path=env.get("PATH") or os.defpath)
+    if which:
+        out.append(which)
+    home = os.path.expanduser("~")
+    exe = "yt-dlp.exe" if os.name == "nt" else "yt-dlp"
+    dirs = [os.path.join(home, ".local", "bin")]
+    if sys.platform == "darwin":
+        dirs += ["/opt/homebrew/bin", "/usr/local/bin"]
+    if os.name == "nt" and env.get("APPDATA"):
+        dirs.append(os.path.join(env["APPDATA"], "Python"))
+    for d in dirs:
+        out.append(os.path.join(d, exe))
+        try:
+            for child in os.listdir(d):
+                out.append(os.path.join(d, child, "Scripts", exe))
+        except OSError:
+            pass
+    seen = set()
+    return [p for p in out if p and not (p in seen or seen.add(p))]
+
+
+def find_ytdlp(env=None):
+    """Return (binary, version). A file that exists but cannot run does not count.
+
+    Existence alone is a trap: a half-copied binary or a wrong-architecture build
+    fails at spawn time, which then looks like "yt-dlp is broken" much later.
+    """
+    tried = []
+    for cand in _ytdlp_candidates(env):
+        if not os.path.exists(cand):
+            continue
+        tried.append(cand)
+        try:
+            r = subprocess.run([cand, "--version"], capture_output=True, text=True, timeout=30)
+        except Exception:
+            continue
+        version = (r.stdout or "").strip().splitlines()
+        if r.returncode == 0 and version:
+            return cand, version[0].strip()
+    err = _YTDLP_HINT
+    if tried:
+        err += "\n  tried: " + ", ".join(tried[:4])
+    raise SystemExit(err)
+
+
+def resolve_cookies(explicit=None, env=None):
+    """explicit arg > DSH_VIDEO_COOKIES > ~/.dsh/video.json "cookies" > none.
+
+    The DSH video plugin uses exactly these three sources, so an installed DSH
+    with a logged-in cookies.txt needs no extra setup here.
+    """
+    env = env or os.environ
+    for cand in (explicit, env.get(COOKIES_ENV)):
+        if cand:
+            if not os.path.exists(cand):
+                raise SystemExit("cookies file not found: %s" % cand)
+            return cand
+    try:
+        with open(DSH_VIDEO_JSON, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        p = cfg.get("cookies") if isinstance(cfg, dict) else None
+        if p and os.path.exists(p):
+            return p
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def media_dir(env=None):
+    env = env or os.environ
+    return env.get(MEDIA_ENV) or os.path.join(
+        os.path.expanduser("~"), ".cache", "bilibili-wm-remover", "media")
+
+
+def _explain_ytdlp(stderr, code):
+    t = str(stderr or "")
+    if re.search(r"may be deleted|geo-restricted|稿件不可见|不存在", t, re.I):
+        return "the video is gone or region-locked (not a tool failure)"
+    if re.search(r"Sign in to confirm|login required|需要登录|Please log in", t, re.I):
+        return ("this video needs a signed-in session (1080P+, member-only or paywalled); "
+                "point --cookies at a cookies.txt, or set %s" % COOKIES_ENV)
+    if re.search(r"HTTP Error 412", t):
+        return "rate limited (HTTP 412); wait a moment and retry"
+    if re.search(r"HTTP Error 429", t):
+        return "too many requests (HTTP 429); wait and retry"
+    if re.search(r"HTTP Error 567", t):
+        return ("the site refused the request (HTTP 567) - usually needs a signed-in session; "
+                "supply cookies, or download the file yourself and pass a local path")
+    if re.search(r"Unsupported URL", t):
+        return "yt-dlp does not support this URL"
+    tail = " | ".join([l for l in t.strip().splitlines() if l.strip()][-2:])
+    return "yt-dlp exited %s%s" % (code, (": " + tail) if tail else "")
+
+
+def fetch_video(url, height=1080, cookies=None, force=False, quiet=False, env=None):
+    """Download url (best <= height, audio included) and return metadata.
+
+    Returns {"path","title","duration","height","url","cached"}.
+    """
+    env = env or os.environ
+    ytdlp, version = find_ytdlp(env)
+    cookie_path = resolve_cookies(cookies, env)
+
+    key = hashlib.sha1(("%s|%s" % (url, height)).encode("utf-8")).hexdigest()[:20]
+    outdir = os.path.join(media_dir(env), key)
+    meta_path = os.path.join(outdir, "meta.json")
+    os.makedirs(outdir, exist_ok=True)
+
+    if not force:
+        for name in sorted(os.listdir(outdir)):
+            if name.startswith("source.") and not name.endswith(".part"):
+                p = os.path.join(outdir, name)
+                if os.path.getsize(p) > 1024:
+                    meta = {}
+                    try:
+                        with open(meta_path, "r", encoding="utf-8") as f:
+                            meta = json.load(f)
+                    except (OSError, ValueError):
+                        pass
+                    return {"path": p, "title": meta.get("title"),
+                            "duration": meta.get("duration"),
+                            "height": meta.get("height", height),
+                            "url": url, "cached": True}
+
+    common_flags = ["--ignore-config", "--no-warnings", "--no-playlist"]
+    base = [ytdlp] + common_flags
+    if cookie_path:
+        base += ["--cookies", cookie_path]
+
+    # Probe first: it fails fast with a readable reason, and gives us the title.
+    title = duration = None
+    if not quiet:
+        print("  probing %s" % url, file=sys.stderr)
+    probe = subprocess.run(base + ["-J", url], capture_output=True, text=True, timeout=180)
+    if probe.returncode != 0:
+        raise SystemExit("cannot read %s\n  %s"
+                         % (url, _explain_ytdlp(probe.stderr, probe.returncode)))
+    try:
+        info = json.loads(probe.stdout)
+        if info.get("_type") == "playlist":
+            entries = [e for e in (info.get("entries") or []) if e]
+            if not entries:
+                raise SystemExit("no playable entry at %s (multi-part link? add ?p=N)" % url)
+            info = entries[0]
+        title = info.get("title")
+        duration = info.get("duration")
+    except SystemExit:
+        raise
+    except ValueError:
+        pass
+
+    # Prefer a progressive stream (one file, no muxing); fall back to DASH,
+    # which is what Bilibili actually serves above 720p - that needs ffmpeg.
+    sel = ("bv*[height<=%d]+ba/b[height<=%d][acodec!=none]/b[height<=%d]/bv*+ba/b"
+           % (height, height, height))
+    args = base + [
+        "-f", sel,
+        "-S", "res:%d" % height,
+        "--merge-output-format", "mp4",
+        "--continue",
+        "--retries", "3", "--fragment-retries", "5",
+        "--no-progress",
+        "-o", os.path.join(outdir, "source.%(ext)s"),
+        url,
+    ]
+    if not quiet:
+        print("  downloading (<=%dp) via yt-dlp %s%s"
+              % (height, version, "" if cookie_path else "  [anonymous: <=720p]"),
+              file=sys.stderr)
+
+    dl = subprocess.run(args, capture_output=True, text=True)
+    video = None
+    for name in sorted(os.listdir(outdir)):
+        if name.startswith("source.") and not name.endswith(".part"):
+            p = os.path.join(outdir, name)
+            if os.path.getsize(p) > 1024:
+                video = p
+                break
+
+    # A non-zero exit can still leave a usable file (post-processing failures are
+    # common); the file is what matters, not the exit code.
+    if video is None:
+        raise SystemExit("download failed\n  %s" % _explain_ytdlp(dl.stderr, dl.returncode))
+
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump({"url": url, "title": title, "duration": duration,
+                   "height": height, "ytdlp": version}, f, ensure_ascii=False, indent=2)
+
+    if not quiet:
+        print("  saved -> %s" % video, file=sys.stderr)
+    return {"path": video, "title": title, "duration": duration,
+            "height": height, "url": url, "cached": False}
+
+
+def add_fetch_args(ap):
+    """Flags every entry point shares for link inputs."""
+    ap.add_argument("--height", type=int, default=1080,
+                    help="max height when the input is a link (default 1080)")
+    ap.add_argument("--cookies", default=None,
+                    help="cookies.txt for login-gated links (default: DSH_VIDEO_COOKIES "
+                         "or the cookies field in ~/.dsh/video.json)")
+    ap.add_argument("--force-download", action="store_true",
+                    help="re-download even if a cached copy exists")
+
+
+def resolve_source(src, height=1080, cookies=None, force=False, quiet=False):
+    """Accept a local path or a link; always return a readable local path."""
+    if not is_url(src):
+        if not os.path.exists(src):
+            raise SystemExit("input not found: %s" % src)
+        return src
+    info = fetch_video(src, height=height, cookies=cookies, force=force, quiet=quiet)
+    if info.get("title") and not quiet:
+        print("  %s" % info["title"], file=sys.stderr)
+    return info["path"]
 
 
 def ensure_model(models_dir, url=None):

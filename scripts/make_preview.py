@@ -107,9 +107,12 @@ def main():
     ap.add_argument("-o", "--out", default="preview.png")
     ap.add_argument("--at", type=float, default=None, help="timestamp (seconds)")
     ap.add_argument("--weights", default=None)
+    C.add_fetch_args(ap)
     a = ap.parse_args()
 
     C.require_ffmpeg()
+    a.src = C.resolve_source(a.src, height=a.height, cookies=a.cookies,
+                             force=a.force_download)
     p = C.probe(a.src)
     fw, fh = C.actual_frame_size(a.src, p["width"], p["height"])
 

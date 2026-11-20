@@ -52,10 +52,30 @@ alpha 反解保住了字形轮廓。这就是推荐 2 的理由。*
 LaMa 权重（约 205 MB）首次运行时自动下载，带 sha256 校验；
 下载不通时的镜像地址写在 references/SETUP.md 里。
 
+## 直接给链接
+
+所有脚本都接受 B站 链接，放链接和放本地文件一样，它自己会先下载：
+
+    python3 scripts/detect_watermark.py \
+      'https://www.bilibili.com/video/BV1p5sm6vEJe' -o wm_work
+
+下载走 [yt-dlp](https://github.com/yt-dlp/yt-dlp)，落在
+`~/.cache/bilibili-wm-remover/media/<hash>/`（键 = 链接 + 清晰度），重跑直接复用，
+所以检测、预览、渲染三步只下一次片子。换缓存位置用 `BILI_WM_MEDIA_DIR`。
+
+cookie 依次取 `--cookies` → `$DSH_VIDEO_COOKIES` → `~/.dsh/video.json` 的
+`cookies` 字段 —— 和 DSH 视频插件是同一套来源，装过 DSH 且登录过 B站 的机器
+不用再配。没有 cookie 也能跑，只是上限 720p；1080p 及以上要登录态。
+
+只想先单独把片子下下来（大文件适合挂后台）：
+
+    python3 scripts/fetch_source.py '<链接>' --height 1080 -o wm_work
+
 ## 每个脚本干什么
 
 | 脚本 | 需要 torch | 作用 |
 |---|---|---|
+| fetch_source.py | 否 | 链接 → 本地文件（yt-dlp），打印落在哪 |
 | detect_watermark.py | 否 | 找到并验证水印，输出掩膜/alpha/报告 |
 | make_preview.py | 可选 | 生成四宫格对比图（没有 torch 就跳过 LaMa 那一格） |
 | remove_lama.py | **是** | 生成式修复，推荐方式 |

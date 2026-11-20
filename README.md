@@ -57,10 +57,33 @@ The agent then picks it up when you ask to remove a B站 watermark.
 The LaMa weights (~205 MB) download automatically on first use, with a sha256
 check. Mirrors are listed in references/SETUP.md.
 
+## From a link
+
+Every script takes a Bilibili URL where it takes a file - it downloads first, then
+does the same thing:
+
+    python3 scripts/detect_watermark.py \
+      'https://www.bilibili.com/video/BV1p5sm6vEJe' -o wm_work
+
+Downloads go through [yt-dlp](https://github.com/yt-dlp/yt-dlp) into
+`~/.cache/bilibili-wm-remover/media/<hash>/`, keyed by url + height and reused,
+so detection, preview and the final render fetch the video exactly once. Point it
+at a different cache with `BILI_WM_MEDIA_DIR`.
+
+Cookies come from `--cookies`, else `$DSH_VIDEO_COOKIES`, else the `cookies`
+field in `~/.dsh/video.json` - the same three sources the DSH video plugin uses,
+so a machine that already plays Bilibili in DSH needs no extra setup. Without
+cookies Bilibili still serves up to 720p; 1080p and above need a signed-in session.
+
+Want the download on its own (big file, run it in the background)?
+
+    python3 scripts/fetch_source.py '<link>' --height 1080 -o wm_work
+
 ## What runs where
 
 | Script | Needs torch | What it does |
 |---|---|---|
+| fetch_source.py | no | link → local file (yt-dlp), prints where it landed |
 | detect_watermark.py | no | finds + validates the mark, writes mask/alpha/report |
 | make_preview.py | optional | 4-up comparison still (skips LaMa panel without torch) |
 | remove_lama.py | **yes** | generative repair, the recommended method |
